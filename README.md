@@ -1,10 +1,11 @@
 # Twi Forced Aligner
 
-A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑trained acoustic model.  
-Simply place your files in the `data/` folders and run `python align.py` – the script automatically downloads the latest (or a chosen) model from GitHub Releases and performs the alignment.
+A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑trained acoustic model.
+ Simply place your files in the `data/` folders and run `python align.py` – the script automatically downloads the latest (or a chosen) model from GitHub Releases and performs the alignment.
 
 ## ✨ Features
 
+- Tiny model size (about 80mb) and runs on CPU
 - No manual model download – script fetches the acoustic model and dictionary from GitHub Releases.
 - If multiple model versions are released, you can interactively choose which one to use.
 - Caches downloaded files – subsequent runs are instant.
@@ -12,48 +13,29 @@ Simply place your files in the `data/` folders and run `python align.py` – the
 
 ## 📋 Prerequisites
 
-- **Montreal Forced Aligner** installed. Recommended via conda:
-  ```bash
-  conda create -n aligner -c conda-forge montreal-forced-aligner
-  conda activate aligner
-```
-
-
-
-- Python 3.8+ and the packages in `requirements.txt` (install with `pip install -r requirements.txt`).
+- **Montreal Forced Aligner** installed. See the [official installation guide](https://montreal-forced-aligner.readthedocs.io/en/latest/installation.html).
+- Python 3.8+ and the packages in `requirements.txt`.
 
 ## 🚀 Quick Start
 
 1. **Clone the repository**
 
-   bash
-
-```
-   git clone https://github.com/yourusername/twi-aligner.git
+   ```bash
+   git clone https://github.com/GhanaNLP/twi-aligner.git
    cd twi-aligner
    ```
 
-   
+2. **Install Python dependencies**
 
-2. **Install Python dependencies** (if you're not inside the MFA conda environment)
-
-   bash
-
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 
-   
-
 3. **Run the aligner**
 
-   bash
-
-   ```
+   ```bash
    python align.py
    ```
-
-   
 
    - If no model is found locally, you will be prompted to choose a release from GitHub.
    - The model and dictionary are downloaded into the `models/` folder.
@@ -78,43 +60,35 @@ Simply place your files in the `data/` folders and run `python align.py` – the
 
 - `--update` – Force re‑download of the model/dictionary (useful when a new release is available).
 
-  bash
-
-   ```
+  ```bash
   python align.py --update
   ```
 
-  
-
 - `--overwrite` – Overwrite existing alignment files in `output/`.
 
-  bash
-
-  ```
+  ```bash
   python align.py --overwrite
   ```
 
-  
-
 ## 📁 Data Preparation
 
-- **Audio**: Place `.wav` files in `data/audio/`. They should be mono, 16‑bit PCM, 16 kHz sample rate (MFA’s preferred  format). If your audio is different, convert it first (e.g., with `ffmpeg`).
+- **Audio**: Place `.wav` files in `data/audio/`. They should be mono, 16‑bit PCM, 16 kHz sample rate (MFA's preferred format). If your audio is different, convert it first (e.g., with `ffmpeg`).
 - **Text**: Place `.txt` files in `data/text/`. Each file should contain exactly one line of orthographic transcription (no punctuation needed). The filename must match the audio file (e.g., `speech01.wav` ↔ `speech01.txt`).
 - **Dictionary**: The repository includes a default Twi lexicon (`models/twi_lexicon.txt` after download). If you need a custom dictionary, place it in `data/dictionary/` and modify the alignment command manually (advanced users).
 
 ## ❓ FAQ
 
 **Q: The script says "No releases found".**
-A: Make sure you are using the correct repository name. If you forked this repo, edit the `REPO` variable at the top of `align.py` to match your username and repository.
+ A: Make sure you are using the correct repository name. If you forked this repo, edit the `REPO` variable at the top of `align.py` to match your username and repository.
 
 **Q: Can I use a locally trained model?**
-A: Yes. Place your model zip and dictionary in the `models/` folder with the exact names `twi_acoustic_model.zip` and `twi_lexicon.txt`. The script will skip the download step.
+ A: Yes. Place your model zip and dictionary in the `models/` folder with the exact names `twi_acoustic_model.zip` and `twi_lexicon.txt`. The script will skip the download step.
 
 **Q: Alignment is slow.**
-A: Alignment time depends on the amount of audio. For large corpora, you can increase the number of parallel jobs by adding `--num_jobs 4` to the MFA command inside `align.py` (or use the `-j` option).
+ A: Alignment time depends on the amount of audio. For large corpora, you can increase the number of parallel jobs by adding `--num_jobs 4` to the MFA command inside `align.py` (or use the `-j` option).
 
 **Q: The dictionary doesn't contain all my words.**
-A: Add missing words to `models/twi_lexicon.txt` following the format `word p h o n e m e s`. You can use a phone set consistent with the acoustic model.
+ A: Add missing words to `models/twi_lexicon.txt` following the format `word p h o n e m e s`. You can use a phone set consistent with the acoustic model.
 
 ## 📦 Included Sample Data
 
@@ -137,35 +111,4 @@ Use these to verify everything works before processing your own files.
 ------
 
 **Happy aligning!**
-If you encounter issues, please open an issue on GitHub.
-
-text
-
-  ```
----
-
-## 4. Sample Data Files
-
-You need to provide actual audio clips and matching text files. For illustration, create two short `.wav` files (16kHz mono) and two `.txt` files with the transcriptions. Name them exactly as shown in the structure.
-
----
-
-## 5. GitHub Releases
-
-After pushing the repository, create a release (e.g., `v1.0.0`) and attach two files:
-- `twi_acoustic_model.zip` – your trained model
-- `twi_lexicon.txt` – the pronunciation dictionary used during training
-
-Make sure the file names match exactly what the script expects.
-
----
-
-## How It All Works Together
-
-1. User clones the repo.
-2. User runs `python align.py`.
-3. Script checks `models/` for `twi_acoustic_model.zip` and `twi_lexicon.txt`. If both exist, it proceeds to alignment.
-4. If missing, it fetches release list from GitHub, lets the user pick a version, downloads the two assets, and saves them.
-5. Alignment runs, output goes to `output/`.
-
-This gives a seamless experience: one command does everything, and models are cached for reuse. The interactive selection is only needed on the very first run or when `--update` is used.
+ If you encounter issues, please open an issue on GitHub.
