@@ -1,3 +1,4 @@
 montreal-forced-aligner>=2.0.0
 requests>=2.25.0
-tqdm>=4.50.0      # for nice download progress bars
+tqdm>=4.50.0
+git+https://github.com/GhanaNLP/twi-g2p.git

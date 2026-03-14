@@ -1,24 +1,15 @@
 # Twi Forced Aligner
 
-A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑trained acoustic model. Simply place your files in the `data/` folders and run `python align.py` – the script automatically downloads the latest (or a chosen) model from GitHub Releases and performs the alignment.
+A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑trained acoustic model. Simply place your files in the `data/` folders and run `python align.py` – everything else is handled automatically.
 
 ## ✨ Features
 
 - **Tiny model size** – about **80 MB** and runs entirely on CPU.
-- **No manual model download** – script fetches the acoustic model and dictionary from GitHub Releases.
-- If multiple model versions are released, you can interactively choose which one to use.
+- **No manual model download** – fetches the acoustic model and dictionary from GitHub Releases automatically.
+- **Any audio length** – long recordings are automatically segmented into short clips before alignment; no manual splitting needed.
+- **Any audio format** – `.wav`, `.mp3`, `.flac`, `.m4a`, `.ogg` are all accepted and converted to the correct format automatically.
 - **Caches downloaded files** – subsequent runs are instant.
 - Comes with sample audio/text to test the pipeline.
-
-## 📋 Prerequisites
-
-- **Montreal Forced Aligner** installed. The easiest and most reliable way is via **conda** (avoids compilation issues like `_kalpy` not found):
-  ```bash
-  conda create -n aligner -c conda-forge montreal-forced-aligner
-  conda activate aligner
-  ```
-  See the [official installation guide](https://montreal-forced-aligner.readthedocs.io/en/latest/installation.html) for alternatives.
-- Python 3.8+ and the packages in `requirements.txt`.
 
 ## 🚀 Quick Start
 
@@ -29,40 +20,42 @@ A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑
    cd twi-aligner
    ```
 
-2. **Install Python dependencies**
+2. **Create the conda environment**
+
+   ```bash
+   conda create -n aligner -c conda-forge montreal-forced-aligner ffmpeg
+   conda activate aligner
+   ```
+
+   > This installs MFA and `ffmpeg` together. Using conda avoids common compilation issues (e.g. `_kalpy` not found) that occur when installing MFA via pip.
+
+3. **Install Python dependencies**
 
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Run the aligner**
+4. **Run the aligner**
 
    ```bash
    python align.py
    ```
 
    - If no model is found locally, you will be prompted to choose a release from GitHub.
-   - The model and dictionary are downloaded into the `models/` folder.
-   - Alignment runs using the sample files in `data/audio` and `data/text`.
-   - Results appear in the `output/` folder as `.TextGrid` files.
+   - The model and dictionary are downloaded into `models/`.
+   - Audio is converted and segmented automatically if needed.
+   - Results appear in `output/` as `.TextGrid` files.
 
-4. **Use your own data**
+5. **Use your own data**
 
-   - Replace the sample `.wav` files in `data/audio` with your own (must be 16 kHz mono).
-   - Replace the sample `.txt` files in `data/text` with matching transcripts (UTF‑8, same basename).
-   - Run `python align.py` again – it will reuse the already downloaded model.
-
-## 🧠 How It Works
-
-- The script contacts the GitHub API to list releases of this repository.
-- If multiple releases exist, you choose one interactively.
-- It downloads `twi_acoustic_model.zip` and `twi_lexicon.txt` from the selected release assets.
-- Then it calls `mfa align` with the provided audio, text, model, and dictionary.
-- Alignment is performed and saved in `output/`.
+   - Place your audio files in `data/audio/` and transcripts in `data/text/`.
+   - Each audio file needs a matching `.txt` with the same filename (e.g. `speech01.wav` ↔ `speech01.txt`).
+   - For long recordings, place the full transcript in the `.txt` file — the script automatically splits it into sentences and segments the audio to match. For best results use one sentence per line, but a plain paragraph works too.
+   - Run `python align.py` again.
 
 ## 🔧 Advanced Options
 
-- `--update` – Force re‑download of the model/dictionary (useful when a new release is available).
+- `--update` – Force re‑download of the model/dictionary.
 
   ```bash
   python align.py --update
@@ -74,41 +67,45 @@ A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑
   python align.py --overwrite
   ```
 
-## 📁 Data Preparation
+- `--no-tones` – Omit tone markers from auto-generated pronunciations.
 
-- **Audio**: Place `.wav` files in `data/audio/`. They should be mono, 16‑bit PCM, 16 kHz sample rate (MFA’s preferred format). If your audio is different, convert it first (e.g., with `ffmpeg`).
-- **Text**: Place `.txt` files in `data/text/`. Each file should contain exactly one line of orthographic transcription (no punctuation needed). The filename must match the audio file (e.g., `speech01.wav` ↔ `speech01.txt`).
-- **Dictionary**: The repository includes a default Twi lexicon (`models/twi_lexicon.txt` after download). If you need a custom dictionary, place it in `data/dictionary/` and modify the alignment command manually (advanced users).
+  ```bash
+  python align.py --no-tones
+  ```
+
+## 📁 Data Format
+
+- **Audio**: Any common format (`.wav`, `.mp3`, `.flac`, `.m4a`, `.ogg`). Converted to 16 kHz mono WAV automatically.
+- **Transcripts**: UTF‑8 `.txt` files. The filename must match the audio file. For long recordings, the full transcript goes in a single `.txt` — one sentence per line gives the best segmentation, but a plain paragraph is also handled automatically.
+- **Dictionary**: Downloaded automatically. Missing words are added using the built‑in G2P converter.
 
 ## ❓ FAQ
 
 **Q: The script says "No releases found".**  
-A: Make sure you are using the correct repository name. If you forked this repo, edit the `REPO` variable at the top of `align.py` to match your username and repository.
+A: Make sure you are using the correct repository name. If you forked this repo, update the `REPO` variable at the top of `align.py`.
 
 **Q: Can I use a locally trained model?**  
-A: Yes. Place your model zip and dictionary in the `models/` folder with the exact names `twi_acoustic_model.zip` and `twi_lexicon.txt`. The script will skip the download step.
+A: Yes. Place your model zip and dictionary in `models/` named `twi_acoustic_model.zip` and `twi_lexicon.txt`. The download step will be skipped.
 
 **Q: Alignment is slow.**  
-A: Alignment time depends on the amount of audio. For large corpora, you can increase the number of parallel jobs by adding `--num_jobs 4` to the MFA command inside `align.py` (or use the `-j` option).
-
-**Q: The dictionary doesn't contain all my words.**  
-A: Add missing words to `models/twi_lexicon.txt` following the format `word p h o n e m e s`. You can use a phone set consistent with the acoustic model.
+A: Alignment time scales with the amount of audio. For large corpora, increase parallel jobs by adding `--num_jobs 4` to the MFA command in `align.py`.
 
 **Q: I get an error about `_kalpy` missing.**  
-A: This usually means MFA was installed with `pip` but the required C extensions weren’t compiled. Reinstall MFA using **conda** as shown in the prerequisites section – it handles all dependencies correctly.
+A: MFA was likely installed with `pip`. Reinstall using conda as shown in the Quick Start – it handles all native dependencies correctly.
+
+**Q: The dictionary doesn't contain all my words.**  
+A: Missing words are added automatically via the G2P converter. If G2P isn't installed, add them manually to `models/twi_lexicon.txt` in the format `word p h o n e m e s`.
 
 ## 📦 Included Sample Data
 
-- `data/audio/sample1.wav` – Short utterance "meda wo ase"  
-- `data/audio/sample2.wav` – Another utterance  
-- `data/text/sample1.txt` – "meda wo ase"  
-- `data/text/sample2.txt` – corresponding transcript  
+- `data/audio/sample1.wav` – Short utterance "meda wo ase"
+- `data/text/sample1.txt` – "meda wo ase"
 
 Use these to verify everything works before processing your own files.
 
 ## 📜 License
 
-[MIT License](LICENSE) 
+[MIT License](LICENSE)
 
 ## 🙏 Acknowledgements
 
