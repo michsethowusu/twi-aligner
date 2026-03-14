@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 # ----------------------------------------------------------------------
 # Configuration – change if you fork the repository
-REPO = "yourusername/twi-aligner"          # GitHub repository
+REPO = "GhanaNLP/twi-aligner"          # GitHub repository
 MODEL_DIR = Path("models")
 AUDIO_DIR = Path("data/audio")
 TEXT_DIR = Path("data/text")
