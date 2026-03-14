@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.env
+.venv
+env/
+venv/
+ENV/
+dist/
+build/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+
+# Project-specific
+/models/
+/output/
+/data/audio/*
+/data/text/*
+# Keep sample files
+!data/audio/sample1.wav
+!data/audio/sample2.wav
+!data/text/sample1.txt
+!data/text/sample2.txt
+
+# Large files / archives
+*.zip
+*.wav
+*.mp3
+*.m4a
+*.flac
