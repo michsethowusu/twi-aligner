@@ -141,6 +141,64 @@ mfa align data/audio/ models/twi_lexicon.txt models/twi_acoustic_model_adapted.z
 
 ---
 
+## 🗂 Aligning a Dataset
+
+`align_dataset.py` is a convenience wrapper that handles bulk alignment from two common input sources, then writes a TSV of word-level timestamps ready for downstream use.
+
+### Install extra dependencies
+
+```bash
+pip install datasets soundfile TextGrid   # TextGrid is optional but recommended
+```
+
+### Option A – Hugging Face dataset
+
+```bash
+python align_dataset.py \
+    --dataset Ghana/twi-religious-speech \
+    --split train \
+    --audio-col audio \
+    --text-col transcription \
+    --output-tsv alignments.tsv
+```
+
+### Option B – Local CSV/TSV + audio files
+
+Your metadata file needs at least two columns: one for audio paths (absolute or relative to the CSV) and one for transcripts.
+
+```
+path,sentence
+recordings/001.wav,meda wo ase
+recordings/002.mp3,ɛte sɛn
+```
+
+```bash
+python align_dataset.py \
+    --csv metadata.csv \
+    --audio-col path \
+    --text-col sentence \
+    --output-tsv alignments.tsv
+```
+
+### Output
+
+Both modes produce the same TSV format:
+
+| sample_id | word | start_sec | end_sec | duration_sec |
+|-----------|------|-----------|---------|--------------|
+| sample_00001 | meda | 0.1200 | 0.3800 | 0.2600 |
+| sample_00001 | wo | 0.3800 | 0.5400 | 0.1600 |
+
+### Common options
+
+```bash
+--max-samples 50     # process only the first N samples (useful for testing)
+--overwrite          # overwrite existing alignment files in output/
+--keep-data          # keep prepared files in data/audio/ and data/text/
+```
+
+---
+
 ## 📁 Data Format
 
 - **Audio**: Any common format (`.wav`, `.mp3`, `.flac`, `.m4a`, `.ogg`). Converted to 16 kHz mono WAV automatically.

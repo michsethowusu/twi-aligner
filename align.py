@@ -1,434 +1,460 @@
 #!/usr/bin/env python3
 """
-Twi Forced Aligner – downloads a pre-trained acoustic model from GitHub Releases
-(if not already present) and aligns audio/text using MFA.
+align_dataset.py
+================
+Align a dataset word-by-word using the Twi Forced Aligner.  Two input modes
+are supported:
 
-Long recordings are automatically segmented into short utterance-level clips
-using proportional word-rate splitting before alignment, so you can hand in
-any length of audio.
+  HF mode   – download an audio-text dataset directly from Hugging Face
+  CSV mode  – use a local CSV/TSV that maps audio file paths to transcripts
+
+In both cases the script prepares the data, runs align.py, parses the output
+TextGrid files, and writes a TSV with one row per aligned word.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HF MODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  python align_dataset.py \\
+      --dataset Ghana/twi-religious-speech \\
+      --split train \\
+      --audio-col audio \\
+      --text-col transcription \\
+      --max-samples 100 \\
+      --output-tsv alignments.tsv
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CSV MODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The CSV/TSV must have at least two columns: one for audio paths and one for
+transcripts.  Paths can be absolute or relative to the CSV file's directory.
+
+  python align_dataset.py \\
+      --csv metadata.csv \\
+      --audio-col path \\
+      --text-col sentence \\
+      --output-tsv alignments.tsv
+
+Example metadata.csv:
+  path,sentence
+  recordings/001.wav,meda wo ase
+  recordings/002.mp3,ɛte sɛn
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT TSV COLUMNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  sample_id   word   start_sec   end_sec   duration_sec
 """
 
+import argparse
+import csv
 import re
-import sys
 import shutil
 import subprocess
-import argparse
-import tempfile
+import sys
 from pathlib import Path
-from typing import List, Dict, Optional
-import requests
-from tqdm import tqdm
+from typing import Optional
 
-# ----------------------------------------------------------------------
-# Configuration – change if you fork the repository
-REPO = "GhanaNLP/twi-aligner"
+# ── Optional dependencies ──────────────────────────────────────────────────────
+
+try:
+    import soundfile as sf
+    SOUNDFILE_AVAILABLE = True
+except ImportError:
+    SOUNDFILE_AVAILABLE = False
+
+try:
+    import textgrid
+    TEXTGRID_AVAILABLE = True
+except ImportError:
+    TEXTGRID_AVAILABLE = False
+
+# ── Paths (must match align.py) ────────────────────────────────────────────────
 MODEL_DIR  = Path("models")
 AUDIO_DIR  = Path("data/audio")
 TEXT_DIR   = Path("data/text")
 OUTPUT_DIR = Path("output")
 
-# Audio files longer than this (seconds) are auto-segmented before alignment.
-MAX_UTTERANCE_SECONDS = 30
-# ----------------------------------------------------------------------
 
-MODEL_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
+# ── Shared helpers ─────────────────────────────────────────────────────────────
 
-# ── GitHub model download ──────────────────────────────────────────────────────
-
-def get_all_releases(repo: str) -> List[Dict]:
-    releases, page = [], 1
-    while True:
-        url = f"https://api.github.com/repos/{repo}/releases?per_page=100&page={page}"
-        try:
-            r = requests.get(url)
-            r.raise_for_status()
-            data = r.json()
-            if not data:
-                break
-            releases.extend(data)
-            page += 1
-        except Exception as e:
-            print(f"Error fetching releases: {e}")
-            break
-    return releases
-
-def download_file(url: str, dest: Path, desc: str = None) -> None:
-    resp = requests.get(url, stream=True)
-    resp.raise_for_status()
-    total = int(resp.headers.get("content-length", 0))
-    with open(dest, "wb") as f, tqdm(
-        desc=desc or dest.name, total=total,
-        unit="B", unit_scale=True, unit_divisor=1024,
-    ) as bar:
-        for chunk in resp.iter_content(chunk_size=8192):
-            f.write(chunk)
-            bar.update(len(chunk))
-
-def select_release_interactive(releases: List[Dict]) -> Optional[Dict]:
-    if not releases:
-        return None
-    if len(releases) == 1:
-        return releases[0]
-    print("\nMultiple model releases found. Please choose one:")
-    for i, rel in enumerate(releases, 1):
-        name = rel.get("name") or rel.get("tag_name")
-        published = rel.get("published_at", "")[:10]
-        print(f"  {i}. {name} ({published})")
-    while True:
-        try:
-            choice = int(input("Enter number (or 0 to cancel): "))
-            if choice == 0:
-                return None
-            if 1 <= choice <= len(releases):
-                return releases[choice - 1]
-        except ValueError:
-            pass
-        print("Invalid choice, try again.")
-
-def ensure_model_and_dict(repo: str, force_update: bool = False) -> bool:
+def check_models() -> bool:
     model_zip = MODEL_DIR / "twi_acoustic_model.zip"
     dict_txt  = MODEL_DIR / "twi_lexicon.txt"
-
-    if model_zip.exists() and dict_txt.exists() and not force_update:
-        print("✓ Model and dictionary already present (use --update to re-download).")
-        return True
-
-    print("Fetching available model releases from GitHub...")
-    releases = get_all_releases(repo)
-    if not releases:
-        print("❌ No releases found. Check the repository name or your network connection.")
+    if not model_zip.exists() or not dict_txt.exists():
+        print("❌ Model or lexicon not found in models/.")
+        print("   Run:  python align.py --update   to download them first.")
         return False
-
-    selected = select_release_interactive(releases)
-    if not selected:
-        print("Download cancelled.")
-        return False
-
-    tag = selected["tag_name"]
-    print(f"Selected release: {tag}")
-    assets = {a["name"]: a["browser_download_url"] for a in selected["assets"]}
-
-    for name in ["twi_acoustic_model.zip", "twi_lexicon.txt"]:
-        if name not in assets:
-            print(f"❌ Required asset '{name}' not found in release {tag}.")
-            return False
-
-    download_file(assets["twi_acoustic_model.zip"], model_zip, desc="Model ZIP")
-    download_file(assets["twi_lexicon.txt"],         dict_txt,  desc="Dictionary")
-    print("✓ Model and dictionary downloaded successfully.")
     return True
 
-# ── Audio utilities ────────────────────────────────────────────────────────────
 
-def check_ffmpeg() -> bool:
+def sanitise_id(raw: str) -> str:
+    """Turn any string into a safe filename stem (alphanumeric + underscores)."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(raw))
+
+
+def prepare_data_dirs() -> None:
+    for d in (AUDIO_DIR, TEXT_DIR, OUTPUT_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    # Clear leftover files from any previous run so MFA starts clean.
+    for p in list(AUDIO_DIR.iterdir()) + list(TEXT_DIR.iterdir()):
+        if p.is_file():
+            p.unlink()
+
+
+def write_txt(sample_id: str, text: str) -> None:
+    (TEXT_DIR / f"{sample_id}.txt").write_text(text.strip(), encoding="utf-8")
+
+
+def unique_id(base: str, seen: set) -> str:
+    """Append a counter suffix if base is already taken."""
+    sid = base
+    counter = 1
+    while sid in seen:
+        sid = f"{base}_{counter:04d}"
+        counter += 1
+    seen.add(sid)
+    return sid
+
+
+# ── HF mode ────────────────────────────────────────────────────────────────────
+
+def load_hf(args) -> int:
+    """Download HF dataset, write wav+txt pairs.  Returns number written."""
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-        return True
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
-
-def get_audio_duration(path: Path) -> Optional[float]:
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True,
-        )
-        return float(r.stdout.strip())
-    except Exception:
-        return None
-
-def convert_audio_to_mfa_format(audio_dir: Path) -> None:
-    """Re-encode all audio in audio_dir to 16 kHz mono 16-bit PCM WAV."""
-    if not check_ffmpeg():
-        print("⚠ ffmpeg not found – skipping audio conversion.")
-        print("  Install it with:  conda install -c conda-forge ffmpeg")
-        return
-
-    supported = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus"}
-    files = [p for p in audio_dir.iterdir() if p.suffix.lower() in supported]
-    if not files:
-        return
-
-    print(f"\n🔄 Checking/converting {len(files)} audio file(s) to 16 kHz mono WAV...")
-    converted = 0
-    for src in files:
-        dest = src.with_suffix(".wav")
-        tmp  = dest.with_suffix(".tmp.wav")
-        try:
-            r = subprocess.run(
-                ["ffmpeg", "-y", "-i", str(src),
-                 "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", str(tmp)],
-                capture_output=True, text=True,
-            )
-            if r.returncode != 0:
-                print(f"  ⚠ Could not convert {src.name}: {r.stderr.strip()[-200:]}")
-                tmp.unlink(missing_ok=True)
-                continue
-            if src != dest:
-                src.unlink()
-            tmp.replace(dest)
-            converted += 1
-        except Exception as e:
-            print(f"  ⚠ Error converting {src.name}: {e}")
-            tmp.unlink(missing_ok=True)
-
-    print(f"  ✓ {converted} file(s) converted/verified.")
-
-# ── Auto-segmentation ──────────────────────────────────────────────────────────
-
-def split_transcript_into_sentences(text: str) -> List[str]:
-    """
-    Turn a raw transcript into a list of sentences.
-    If already multi-line, use those lines directly.
-    Otherwise split on sentence-ending punctuation (.  !  ?).
-    """
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) > 1:
-        return lines
-    raw = lines[0] if lines else text.strip()
-    chunks = [c.strip() for c in re.split(r'(?<=[.!?])\s+', raw) if c.strip()]
-    return chunks if chunks else [raw]
-
-def build_proportional_segments(sentences: List[str],
-                                 total_duration: float,
-                                 max_seconds: float = MAX_UTTERANCE_SECONDS) -> List[Dict]:
-    """
-    Split a transcript + audio into MFA-ready clips using word rate.
-
-    Core idea:
-      - Compute words-per-second: total_words / total_duration
-      - Each word therefore takes total_duration / total_words seconds
-      - Accumulate sentences until the running total would exceed max_seconds,
-        then flush to a clip. Sentences are only used as 'do not cut mid-sentence'
-        boundaries — they do not affect the overall word rate or timing.
-
-    The resulting clip boundaries are timestamps in the actual audio derived
-    purely from the word rate, with no audio analysis required.
-    """
-    if not sentences:
-        return []
-
-    word_counts = [max(1, len(s.split())) for s in sentences]
-    total_words = sum(word_counts)
-    durations   = [total_duration * (wc / total_words) for wc in word_counts]
-
-    segments: List[Dict] = []
-    current_text:  List[str]  = []
-    current_start: float      = 0.0
-    current_dur:   float      = 0.0
-    elapsed:       float      = 0.0
-
-    for sentence, dur in zip(sentences, durations):
-        if current_text and (current_dur + dur) > max_seconds:
-            segments.append({
-                "start": current_start,
-                "end":   elapsed,
-                "text":  " ".join(current_text),
-            })
-            current_start = elapsed
-            current_text  = []
-            current_dur   = 0.0
-
-        current_text.append(sentence)
-        current_dur += dur
-        elapsed     += dur
-
-    if current_text:
-        segments.append({
-            "start": current_start,
-            "end":   total_duration,
-            "text":  " ".join(current_text),
-        })
-
-    return segments
-
-def segment_long_files(audio_dir: Path, text_dir: Path) -> None:
-    """
-    For every audio/text pair where the audio exceeds MAX_UTTERANCE_SECONDS:
-      1. Split the transcript into sentences.
-      2. Assign each sentence a duration proportional to its word count.
-      3. Merge sentences into MFA-sized chunks (≤ MAX_UTTERANCE_SECONDS each).
-      4. Slice the audio at the computed boundaries using ffmpeg.
-      5. Write one .wav + .txt per chunk, then move the originals to data/originals/.
-    """
-    wav_files  = list(audio_dir.glob("*.wav"))
-    long_files = [
-        w for w in wav_files
-        if (get_audio_duration(w) or 0) > MAX_UTTERANCE_SECONDS
-    ]
-    if not long_files:
-        return
-
-    if not check_ffmpeg():
-        print("⚠ ffmpeg is required for auto-segmentation.")
-        print("  Install it with:  conda install -c conda-forge ffmpeg")
+        from datasets import load_dataset, Audio
+    except ImportError:
+        print("❌ 'datasets' not installed.  Run:  pip install datasets")
         sys.exit(1)
 
-    for wav in long_files:
-        txt = text_dir / (wav.stem + ".txt")
-        if not txt.exists():
-            print(f"⚠ No transcript for {wav.name} – cannot segment, skipping.")
+    if not SOUNDFILE_AVAILABLE:
+        print("❌ 'soundfile' not installed.  Run:  pip install soundfile")
+        sys.exit(1)
+
+    print(f"\n📥 Loading '{args.dataset}' (split: {args.split})...")
+    try:
+        ds = load_dataset(args.dataset, split=args.split, trust_remote_code=True)
+    except Exception as e:
+        print(f"❌ Could not load dataset: {e}")
+        sys.exit(1)
+
+    try:
+        ds = ds.cast_column(args.audio_col, Audio(sampling_rate=16_000))
+    except Exception as e:
+        print(f"❌ Could not cast audio column '{args.audio_col}': {e}")
+        sys.exit(1)
+
+    if args.max_samples:
+        ds = ds.select(range(min(args.max_samples, len(ds))))
+
+    print(f"  ✓ {len(ds)} sample(s) to process.")
+    prepare_data_dirs()
+
+    written, seen = 0, set()
+    for idx, sample in enumerate(ds):
+        text = sample.get(args.text_col, "").strip()
+        if not text:
+            print(f"  ⚠ Sample {idx}: empty text – skipping.")
             continue
 
-        duration = get_audio_duration(wav) or 0.0
-        mins, secs = divmod(int(duration), 60)
-        print(f"\n✂ {wav.name} is {mins}m {secs}s – auto-segmenting into short clips...")
-
-        raw_text  = txt.read_text(encoding="utf-8")
-        sentences = split_transcript_into_sentences(raw_text)
-        if not sentences:
-            print(f"  ⚠ Transcript for {wav.name} is empty – skipping.")
+        audio_data = sample.get(args.audio_col)
+        if audio_data is None:
+            print(f"  ⚠ Sample {idx}: no audio – skipping.")
             continue
 
-        segments = build_proportional_segments(sentences, duration)
-        print(f"  Merged {len(sentences)} sentence(s) into {len(segments)} clip(s) "
-              f"(≤{MAX_UTTERANCE_SECONDS}s each).")
+        raw_id = sample.get("id", sample.get("path", f"sample_{idx:05d}"))
+        sid    = unique_id(sanitise_id(Path(str(raw_id)).stem), seen)
 
-        base_stem = re.sub(r'_\d{3}$', '', wav.stem)
+        try:
+            sf.write(
+                str(AUDIO_DIR / f"{sid}.wav"),
+                audio_data["array"],
+                audio_data["sampling_rate"],
+                subtype="PCM_16",
+            )
+        except Exception as e:
+            print(f"  ⚠ Could not write audio for {sid}: {e}")
+            continue
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            written = 0
-            clip_pairs = []
+        write_txt(sid, text)
+        written += 1
 
-            for i, seg in enumerate(segments, start=1):
-                seg_dur = seg["end"] - seg["start"]
-                if seg_dur <= 0 or not seg["text"]:
-                    continue
-                name     = f"{base_stem}_{i:03d}"
-                tmp_wav  = tmp_path / f"{name}.wav"
-                tmp_txt  = tmp_path / f"{name}.txt"
-                r = subprocess.run(
-                    ["ffmpeg", "-y", "-i", str(wav),
-                     "-ss", f"{seg['start']:.3f}", "-t", f"{seg_dur:.3f}",
-                     "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", str(tmp_wav)],
+    return written
+
+
+# ── CSV mode ───────────────────────────────────────────────────────────────────
+
+def load_csv(args) -> int:
+    """
+    Read a local CSV/TSV, copy audio files into data/audio/ (converting via
+    ffmpeg if needed), and write transcripts into data/text/.
+    Returns number of samples written.
+    """
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        print(f"❌ CSV file not found: {csv_path}")
+        sys.exit(1)
+
+    delimiter = "\t" if csv_path.suffix.lower() in (".tsv", ".tab") else ","
+
+    print(f"\n📄 Reading '{csv_path}'...")
+    rows = []
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f, delimiter=delimiter)
+        if args.audio_col not in (reader.fieldnames or []):
+            print(f"❌ Audio column '{args.audio_col}' not found in CSV.")
+            print(f"   Available columns: {reader.fieldnames}")
+            sys.exit(1)
+        if args.text_col not in (reader.fieldnames or []):
+            print(f"❌ Text column '{args.text_col}' not found in CSV.")
+            print(f"   Available columns: {reader.fieldnames}")
+            sys.exit(1)
+        rows = list(reader)
+
+    if args.max_samples:
+        rows = rows[: args.max_samples]
+
+    print(f"  ✓ {len(rows)} row(s) to process.")
+    prepare_data_dirs()
+
+    # Resolve audio paths relative to the CSV's directory
+    csv_dir = csv_path.parent
+
+    written, seen = 0, set()
+    for idx, row in enumerate(rows):
+        text = row.get(args.text_col, "").strip()
+        if not text:
+            print(f"  ⚠ Row {idx}: empty text – skipping.")
+            continue
+
+        raw_audio_path = row.get(args.audio_col, "").strip()
+        if not raw_audio_path:
+            print(f"  ⚠ Row {idx}: empty audio path – skipping.")
+            continue
+
+        src = Path(raw_audio_path)
+        if not src.is_absolute():
+            src = csv_dir / src
+        if not src.exists():
+            print(f"  ⚠ Audio file not found: {src} – skipping.")
+            continue
+
+        sid  = unique_id(sanitise_id(src.stem), seen)
+        dest = AUDIO_DIR / f"{sid}.wav"
+
+        # Copy as-is if already a WAV; otherwise let align.py's ffmpeg step
+        # handle conversion (it re-encodes everything to 16 kHz mono anyway).
+        try:
+            if src.suffix.lower() == ".wav":
+                shutil.copy2(src, dest)
+            else:
+                # Pre-convert non-WAV formats so MFA can find a .wav file
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(src),
+                     "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", str(dest)],
                     capture_output=True, text=True,
                 )
-                if r.returncode != 0:
-                    print(f"  ⚠ Could not extract segment {i}: {r.stderr.strip()[-150:]}")
+                if result.returncode != 0:
+                    print(f"  ⚠ ffmpeg could not convert {src.name}: "
+                          f"{result.stderr.strip()[-150:]}")
                     continue
-                tmp_txt.write_text(seg["text"], encoding="utf-8")
-                clip_pairs.append((tmp_wav, tmp_txt,
-                                   audio_dir / f"{name}.wav",
-                                   text_dir  / f"{name}.txt"))
-                written += 1
+        except Exception as e:
+            print(f"  ⚠ Could not prepare audio for row {idx}: {e}")
+            continue
 
-            if written == 0:
-                print(f"  ⚠ No clips written for {wav.name} – originals kept.")
-                continue
+        write_txt(sid, text)
+        written += 1
 
-            originals_audio = audio_dir.parent / "originals" / "audio"
-            originals_text  = audio_dir.parent / "originals" / "text"
-            originals_audio.mkdir(parents=True, exist_ok=True)
-            originals_text.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(wav), originals_audio / wav.name)
-            shutil.move(str(txt), originals_text  / txt.name)
-            print(f"  Original files moved to data/originals/ for safekeeping.")
+    return written
 
-            for tmp_wav, tmp_txt, final_wav, final_txt in clip_pairs:
-                shutil.move(str(tmp_wav), final_wav)
-                shutil.move(str(tmp_txt), final_txt)
 
-        print(f"  ✓ Written {written} clip(s).")
+# ── Alignment ──────────────────────────────────────────────────────────────────
 
-# ── File-pair validation ───────────────────────────────────────────────────────
-
-def validate_file_pairs(audio_dir: Path, text_dir: Path) -> bool:
-    audio_stems = {p.stem for p in audio_dir.glob("*.wav")}
-    text_stems  = {p.stem for p in text_dir.glob("*.txt")}
-    matched     = audio_stems & text_stems
-
-    for stem in sorted(audio_stems - text_stems):
-        print(f"⚠ {stem}.wav has no matching transcript – will be skipped by MFA.")
-    for stem in sorted(text_stems - audio_stems):
-        print(f"⚠ {stem}.txt has no matching audio – will be skipped by MFA.")
-
-    if not matched:
-        print("❌ No matched audio/text pairs found.")
-        print("   Make sure each audio file has a transcript with the same filename.")
-        return False
-
-    print(f"✓ {len(matched)} matched audio/text pair(s) ready for alignment.")
-    return True
-
-# ── Main alignment pipeline ────────────────────────────────────────────────────
-
-def run_alignment(overwrite: bool = False) -> None:
-    model_zip = MODEL_DIR / "twi_acoustic_model.zip"
-    dict_txt  = MODEL_DIR / "twi_lexicon.txt"
-
-    # 1. Convert audio to MFA format
-    if AUDIO_DIR.exists():
-        convert_audio_to_mfa_format(AUDIO_DIR)
-
-    # 2. Auto-segment any long files
-    if AUDIO_DIR.exists() and TEXT_DIR.exists():
-        segment_long_files(AUDIO_DIR, TEXT_DIR)
-
-    # 3. Pre-flight checks
-    errors = False
-    if not AUDIO_DIR.exists() or not any(AUDIO_DIR.glob("*.wav")):
-        print("❌ No .wav files found in data/audio/. Please add your audio files.")
-        errors = True
-    if not TEXT_DIR.exists() or not any(TEXT_DIR.glob("*.txt")):
-        print("❌ No .txt files found in data/text/. Please add your transcripts.")
-        errors = True
-    if not model_zip.exists():
-        print("❌ Acoustic model missing. Run with --update to download.")
-        errors = True
-    if not dict_txt.exists():
-        print("❌ Lexicon missing. Run with --update to download.")
-        errors = True
-    if errors:
-        sys.exit(1)
-
-    if not validate_file_pairs(AUDIO_DIR, TEXT_DIR):
-        sys.exit(1)
-
-    # 4. Copy .txt files into data/audio/ so MFA finds them next to the .wav files.
-    #    MFA's --txt_dir flag is unreliable across versions; co-location always works.
-    for txt_file in TEXT_DIR.glob("*.txt"):
-        dest = AUDIO_DIR / txt_file.name
-        if not dest.exists():
-            shutil.copy2(str(txt_file), dest)
-
-    # 5. Run MFA
-    cmd = [
-        "mfa", "align",
-        str(AUDIO_DIR), str(dict_txt), str(model_zip), str(OUTPUT_DIR),
-        "--clean",
-    ]
+def run_align(overwrite: bool) -> bool:
+    cmd = [sys.executable, "align.py"]
     if overwrite:
         cmd.append("--overwrite")
+    print("\n🚀 Running align.py...")
+    return subprocess.run(cmd).returncode == 0
 
-    print("\n🚀 Running alignment...")
-    try:
-        subprocess.run(cmd, check=True)
-        print(f"\n✅ Alignment complete! Results saved in {OUTPUT_DIR}/")
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ Alignment failed: {e}")
-        print("\nTroubleshooting tips:")
-        print("  1. Check the MFA log files shown above for details.")
-        print("  2. Make sure all transcript words appear in models/twi_lexicon.txt.")
-        print("  3. Run:  mfa validate data/audio models/twi_lexicon.txt models/twi_acoustic_model.zip")
-        sys.exit(1)
+
+# ── TextGrid parsing ───────────────────────────────────────────────────────────
+
+def parse_textgrid_lib(tg_path: Path) -> list[dict]:
+    tg = textgrid.TextGrid.fromFile(str(tg_path))
+    words = []
+    for tier in tg.tiers:
+        if tier.name.lower() in ("words", "word"):
+            for interval in tier:
+                label = interval.mark.strip()
+                if label and label not in ("<eps>", "sp", "sil", ""):
+                    words.append({
+                        "word":         label,
+                        "start_sec":    round(interval.minTime, 4),
+                        "end_sec":      round(interval.maxTime, 4),
+                        "duration_sec": round(interval.maxTime - interval.minTime, 4),
+                    })
+    return words
+
+
+def parse_textgrid_manual(tg_path: Path) -> list[dict]:
+    """Dependency-free TextGrid parser for MFA's standard output format."""
+    text = tg_path.read_text(encoding="utf-8", errors="replace")
+    words = []
+    tier_blocks = re.split(r'item\s*\[\d+\]', text)
+    word_tier = next(
+        (b for b in tier_blocks if re.search(r'name\s*=\s*"words?"', b, re.IGNORECASE)),
+        None,
+    )
+    if not word_tier:
+        return words
+    for xmin, xmax, label in re.findall(
+        r'xmin\s*=\s*([\d.]+).*?xmax\s*=\s*([\d.]+).*?(?:text|mark)\s*=\s*"([^"]*)"',
+        word_tier, re.DOTALL,
+    ):
+        label = label.strip()
+        if label and label not in ("<eps>", "sp", "sil", ""):
+            start = round(float(xmin), 4)
+            end   = round(float(xmax), 4)
+            words.append({
+                "word":         label,
+                "start_sec":    start,
+                "end_sec":      end,
+                "duration_sec": round(end - start, 4),
+            })
+    return words
+
+
+def parse_textgrid(tg_path: Path) -> list[dict]:
+    if TEXTGRID_AVAILABLE:
+        try:
+            return parse_textgrid_lib(tg_path)
+        except Exception as e:
+            print(f"  ⚠ textgrid library failed on {tg_path.name} ({e}), using fallback.")
+    return parse_textgrid_manual(tg_path)
+
+
+# ── Output ─────────────────────────────────────────────────────────────────────
+
+def write_tsv(output_tsv: Path) -> int:
+    tg_files = sorted(OUTPUT_DIR.glob("**/*.TextGrid"))
+    if not tg_files:
+        print("❌ No TextGrid files found in output/. Alignment produced no results.")
+        return 0
+
+    print(f"\n📄 Parsing {len(tg_files)} TextGrid file(s)...")
+    total = 0
+    with open(output_tsv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["sample_id", "word", "start_sec", "end_sec", "duration_sec"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        for tg_path in tg_files:
+            words = parse_textgrid(tg_path)
+            if not words:
+                print(f"  ⚠ No word intervals in {tg_path.name}")
+                continue
+            for w in words:
+                writer.writerow({"sample_id": tg_path.stem, **w})
+            total += len(words)
+
+    return total
+
+
+def print_preview(output_tsv: Path, n: int = 15) -> None:
+    print(f"\n{'─' * 62}")
+    print(f"  {'SAMPLE_ID':<25} {'WORD':<16} {'START':>8}  {'END':>8}")
+    print(f"{'─' * 62}")
+    with open(output_tsv, encoding="utf-8") as f:
+        for i, row in enumerate(csv.DictReader(f, delimiter="\t")):
+            if i >= n:
+                break
+            print(
+                f"  {row['sample_id']:<25} {row['word']:<16} "
+                f"{float(row['start_sec']):>8.3f}  {float(row['end_sec']):>8.3f}"
+            )
+    print(f"{'─' * 62}")
+
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Twi Forced Aligner – automatic download, segmentation, and alignment."
+        description="Align a dataset word-by-word: HF dataset or local CSV + audio.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
-    parser.add_argument("--update",    action="store_true", help="Re-download model and dictionary")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
+
+    # Input – mutually exclusive modes
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument("--dataset", metavar="HF_REPO_ID",
+                     help="Hugging Face dataset repo ID  (HF mode)")
+    src.add_argument("--csv",     metavar="FILE",
+                     help="Local CSV/TSV metadata file   (CSV mode)")
+
+    # Shared column names
+    parser.add_argument("--audio-col",   default="audio",
+                        help="Column with audio data/paths (default: audio)")
+    parser.add_argument("--text-col",    default="sentence",
+                        help="Column with transcripts     (default: sentence)")
+
+    # HF-only
+    parser.add_argument("--split",       default="train",
+                        help="[HF] Dataset split           (default: train)")
+
+    # Common
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="Limit samples processed (useful for testing)")
+    parser.add_argument("--output-tsv",  default="alignments.tsv",
+                        help="Output TSV path              (default: alignments.tsv)")
+    parser.add_argument("--overwrite",   action="store_true",
+                        help="Overwrite existing alignment files")
+    parser.add_argument("--keep-data",   action="store_true",
+                        help="Keep prepared files in data/audio/ and data/text/")
+
     args = parser.parse_args()
 
-    if not ensure_model_and_dict(REPO, force_update=args.update):
+    if not check_models():
         sys.exit(1)
 
-    run_alignment(overwrite=args.overwrite)
+    if not TEXTGRID_AVAILABLE:
+        print("ℹ  'textgrid' library not found — using built-in parser.")
+        print("   For more robust parsing:  pip install TextGrid\n")
+
+    # ── Load data ───────────────────────────────────────────────────────────────
+    if args.dataset:
+        written = load_hf(args)
+    else:
+        written = load_csv(args)
+
+    if written == 0:
+        print("❌ No samples were prepared. Nothing to align.")
+        sys.exit(1)
+    print(f"\n  ✓ {written} sample(s) ready for alignment.")
+
+    # ── Align ───────────────────────────────────────────────────────────────────
+    if not run_align(overwrite=args.overwrite):
+        print("\n❌ Alignment failed. See MFA output above.")
+        sys.exit(1)
+
+    # ── Parse & write TSV ───────────────────────────────────────────────────────
+    output_tsv = Path(args.output_tsv)
+    total_words = write_tsv(output_tsv)
+    if total_words == 0:
+        sys.exit(1)
+
+    print(f"  ✓ {total_words} word alignment(s) written to {output_tsv}")
+    print_preview(output_tsv)
+    print(f"\n✅ Done.  Full results in: {output_tsv}")
+
+    # ── Cleanup ─────────────────────────────────────────────────────────────────
+    if not args.keep_data:
+        for p in list(AUDIO_DIR.iterdir()) + list(TEXT_DIR.iterdir()):
+            if p.is_file():
+                p.unlink()
+        print("  (Temp files cleaned up.  Use --keep-data to retain them.)")
+
 
 if __name__ == "__main__":
     main()
