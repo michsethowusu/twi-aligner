@@ -122,11 +122,11 @@ Build an expanded lexicon yourself (handy for inspection or offline prep):
 
 ```bash
 # from your transcripts
-python g2p_twi.py --text-dir data/text --lexicon models/twi_lexicon.txt \
+python -m twi_aligner.g2p --text-dir data/text --lexicon models/twi_lexicon.txt \
     --merged-out models/twi_lexicon.expanded.txt --unmappable-out output/oov_unmappable.txt
 
 # or from a plain word list
-python g2p_twi.py --words new_words.txt --lexicon models/twi_lexicon.txt
+python -m twi_aligner.g2p --words new_words.txt --lexicon models/twi_lexicon.txt
 ```
 
 To align strictly against the bundled dictionary instead, pass `--no-g2p`.
@@ -193,10 +193,10 @@ Those are built for transcription; their word-boundary estimates are imprecise, 
 The bundled model was trained on religious speech, so boundaries are most precise on similar material. If your audio is a different style (conversational, broadcast) you can adapt the model — see [Finetuning](#-finetuning-optional).
 
 **The script says "No releases found".**
-Check the repo name; if you forked, update the `REPO` variable at the top of `align.py`.
+Check the repo name; if you forked, update the `REPO` variable at the top of `twi_aligner/download.py`.
 
 **Alignment is slow.**
-Time scales with audio length. Add `--num_jobs 4` to the MFA command in `align.py` to parallelise.
+Time scales with audio length. Add `--num_jobs 4` to the MFA command in `twi_aligner/align.py` to parallelise.
 
 **I get a `_kalpy` missing error.**
 MFA was installed via pip. Reinstall with conda as shown in the Quick Start.
@@ -221,6 +221,25 @@ python align.py
 ```
 
 Options: `--data-dir`, `--output-model`, `--num-jobs N`, `--overwrite`.
+
+---
+
+## 🧩 Repository layout
+
+```
+align.py  align_dataset.py  finetune.py   # thin entry points (run these)
+twi_aligner/                              # the package
+├── align.py        alignment pipeline
+├── dataset.py      batch alignment (HF / CSV)
+├── finetune.py     model adaptation
+├── g2p.py          grapheme-to-phoneme conversion
+├── download.py     model/dictionary download
+├── audio.py        conversion + auto-segmentation
+└── paths.py        shared data/ models/ output/ locations
+data/   models/   output/                 # your inputs and results (gitignored)
+```
+
+Installing is optional — `python align.py` works straight from a clone. If you prefer, `pip install -e .` also exposes `twi-align`, `twi-align-dataset`, `twi-finetune`, and `twi-g2p` commands.
 
 ---
 

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twi-aligner"
+version = "1.0.0"
+description = "Word-level forced alignment for Twi (Akan) audio, built on the Montreal Forced Aligner."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+
+# Note: the Montreal Forced Aligner and ffmpeg are installed via conda
+# (see the README Quick Start); they are not pip-installable here.
+dependencies = [
+    "requests>=2.25.0",
+    "tqdm>=4.50.0",
+]
+
+[project.optional-dependencies]
+# Needed only for batch alignment via align_dataset.py
+dataset = [
+    "datasets",
+    "soundfile",
+    "TextGrid",
+]
+
+[project.scripts]
+twi-align         = "twi_aligner.align:main"
+twi-align-dataset = "twi_aligner.dataset:main"
+twi-finetune      = "twi_aligner.finetune:main"
+twi-g2p           = "twi_aligner.g2p:main"
+
+[tool.setuptools]
+packages = ["twi_aligner"]
+py-modules = []
