@@ -13,6 +13,7 @@ A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑
 - **No manual model download** – fetches the acoustic model and dictionary from GitHub Releases automatically.
 - **Any audio length** – long recordings are automatically segmented into short clips before alignment; no manual splitting needed.
 - **Any audio format** – `.wav`, `.mp3`, `.flac`, `.m4a`, `.ogg` are all accepted and converted to the correct format automatically.
+- **Out-of-vocabulary words handled automatically** – words not in the dictionary are converted to phones on the fly using grapheme-to-phoneme (G2P) rules for Twi, so you are no longer limited to the ~21k words in the bundled lexicon. See [Out-of-Vocabulary Words](#-out-of-vocabulary-oov-words).
 - **Caches downloaded files** – subsequent runs are instant.
 - Comes with sample audio/text to test the pipeline.
 
@@ -125,6 +126,53 @@ mfa align data/audio/ models/twi_lexicon.txt models/twi_acoustic_model_adapted.z
 
 ---
 
+## 🔤 Out-of-Vocabulary (OOV) Words
+
+A forced aligner can only place a word if it knows how that word is pronounced. The bundled dictionary (`models/twi_lexicon.txt`) covers ~21,000 Twi words, but real transcripts always contain words it has never seen — names, loanwords, inflected forms, and so on.
+
+`align.py` handles these automatically. **Before alignment runs**, it scans your transcripts, finds every word that is missing from the dictionary, and generates a pronunciation for it using grapheme-to-phoneme (G2P) rules. The generated entries are merged into a working copy of the lexicon (`models/twi_lexicon.expanded.txt`) — your original dictionary is never modified.
+
+### How it works
+
+Twi orthography is almost perfectly phonemic: a word's pronunciation is essentially its sequence of characters. The G2P step lower-cases each word, drops punctuation and clitic markers, maps a few non-Twi letters found in loanwords (`j→y`, `v→f`, `z→s`, `x→k s`, `q→k`), and emits one phone per remaining character — using **only** the 23 phones the acoustic model was trained on (`a b c d e f g h i k l m n o p r s t u w y ɔ ɛ`). In practice this covers the large majority of any Twi transcript.
+
+### Coverage report
+
+Each run prints a coverage summary, for example:
+
+```
+🔤 Expanding lexicon for out-of-vocabulary words...
+  Lexicon coverage: 96.2% (25/26 unique words)
+    18 already in dictionary, 7 generated, 1 unmappable.
+    Unmappable (will use the OOV/<unk> model): 99bottles
+    Full list written to output/oov_unmappable.txt
+```
+
+Words that cannot be represented with the model's phones (e.g. anything containing digits, or symbols like `%`) are listed in `output/oov_unmappable.txt`. These are passed to MFA's standard OOV handling and will not get precise alignments — typically a small fraction of a transcript. To fix them, either rewrite them in normal Twi spelling (e.g. spell out numbers) or add a manual pronunciation to `models/twi_lexicon.txt`.
+
+### Building a lexicon yourself
+
+You can also run the G2P step standalone — handy for inspecting what will be generated, or for preparing a dictionary outside the aligner:
+
+```bash
+# from a directory of transcripts
+python g2p_twi.py --text-dir data/text --lexicon models/twi_lexicon.txt \
+    --merged-out models/twi_lexicon.expanded.txt --unmappable-out output/oov_unmappable.txt
+
+# or from a plain word list (one or many words per line)
+python g2p_twi.py --words new_words.txt --lexicon models/twi_lexicon.txt
+```
+
+### Disabling G2P
+
+To align strictly against the bundled dictionary (treating every other word as OOV, the old behaviour), pass `--no-g2p`:
+
+```bash
+python align.py --no-g2p
+```
+
+---
+
 ## 🔧 Advanced Options
 
 - `--update` – Force re‑download of the model/dictionary.
@@ -137,6 +185,12 @@ mfa align data/audio/ models/twi_lexicon.txt models/twi_acoustic_model_adapted.z
 
   ```bash
   python align.py --overwrite
+  ```
+
+- `--no-g2p` – Disable automatic G2P expansion and align only against the bundled dictionary.
+
+  ```bash
+  python align.py --no-g2p
   ```
 
 ---
@@ -203,7 +257,7 @@ Both modes produce the same TSV format:
 
 - **Audio**: Any common format (`.wav`, `.mp3`, `.flac`, `.m4a`, `.ogg`). Converted to 16 kHz mono WAV automatically.
 - **Transcripts**: UTF‑8 `.txt` files. The filename must match the audio file. For long recordings, the full transcript goes in a single `.txt` — one sentence per line gives the best segmentation, but a plain paragraph is also handled automatically.
-- **Dictionary**: Downloaded automatically as part of the model release. If a word in your transcript is not in the lexicon, add it manually to `models/twi_lexicon.txt` in the format `word p h o n e m e s`.
+- **Dictionary**: Downloaded automatically as part of the model release. Words not in the lexicon are pronounced automatically via G2P (see [Out-of-Vocabulary Words](#-out-of-vocabulary-oov-words)); you only need to edit `models/twi_lexicon.txt` for words the G2P step reports as unmappable.
 
 ---
 
@@ -228,7 +282,7 @@ A: Alignment time scales with the amount of audio. Increase parallel jobs by add
 A: MFA was likely installed with `pip`. Reinstall using conda as shown in the Quick Start – it handles all native dependencies correctly.
 
 **Q: A word in my transcript is not in the dictionary.**  
-A: Add it manually to `models/twi_lexicon.txt` using the format `word p h o n e m e s` (space-separated phonemes). MFA will treat unknown words as out-of-vocabulary (OOV) and skip them during alignment.
+A: It is handled automatically — `align.py` generates a pronunciation for it via G2P before alignment (see [Out-of-Vocabulary Words](#-out-of-vocabulary-oov-words)). Only words reported in `output/oov_unmappable.txt` (e.g. those containing digits or symbols) need attention: rewrite them in normal Twi spelling, or add a manual entry to `models/twi_lexicon.txt` using the format `word p h o n e m e s`.
 
 ---
 

@@ -19,6 +19,8 @@ from typing import List, Dict, Optional
 import requests
 from tqdm import tqdm
 
+import g2p_twi
+
 # ----------------------------------------------------------------------
 # Configuration – change if you fork the repository
 REPO = "GhanaNLP/twi-aligner"
@@ -355,7 +357,24 @@ def validate_file_pairs(audio_dir: Path, text_dir: Path) -> bool:
 
 # ── Main alignment pipeline ────────────────────────────────────────────────────
 
-def run_alignment(overwrite: bool = False) -> None:
+def expand_lexicon_for_transcripts(dict_txt: Path) -> Path:
+    """Generate pronunciations for any OOV word in data/text/ and return the
+    path to an expanded lexicon. Falls back to the base lexicon on any error."""
+    try:
+        words = g2p_twi.words_from_text_dir(TEXT_DIR)
+        if not words:
+            return dict_txt
+        expanded = MODEL_DIR / "twi_lexicon.expanded.txt"
+        print("\n🔤 Expanding lexicon for out-of-vocabulary words...")
+        report = g2p_twi.expand_lexicon(words, dict_txt, expanded)
+        g2p_twi.print_report(report, OUTPUT_DIR / "oov_unmappable.txt")
+        return expanded
+    except Exception as e:
+        print(f"⚠ G2P expansion failed ({e}); using base lexicon as-is.")
+        return dict_txt
+
+
+def run_alignment(overwrite: bool = False, use_g2p: bool = True) -> None:
     model_zip = MODEL_DIR / "twi_acoustic_model.zip"
     dict_txt  = MODEL_DIR / "twi_lexicon.txt"
 
@@ -394,10 +413,13 @@ def run_alignment(overwrite: bool = False) -> None:
         if not dest.exists():
             shutil.copy2(str(txt_file), dest)
 
-    # 5. Run MFA
+    # 5. Expand the lexicon so out-of-vocabulary words can still be aligned.
+    align_dict = expand_lexicon_for_transcripts(dict_txt) if use_g2p else dict_txt
+
+    # 6. Run MFA
     cmd = [
         "mfa", "align",
-        str(AUDIO_DIR), str(dict_txt), str(model_zip), str(OUTPUT_DIR),
+        str(AUDIO_DIR), str(align_dict), str(model_zip), str(OUTPUT_DIR),
         "--clean",
     ]
     if overwrite:
@@ -411,7 +433,8 @@ def run_alignment(overwrite: bool = False) -> None:
         print(f"\n❌ Alignment failed: {e}")
         print("\nTroubleshooting tips:")
         print("  1. Check the MFA log files shown above for details.")
-        print("  2. Make sure all transcript words appear in models/twi_lexicon.txt.")
+        print("  2. Words that could not be auto-mapped are listed in output/oov_unmappable.txt;")
+        print("     add manual pronunciations for them to models/twi_lexicon.txt if needed.")
         print("  3. Run:  mfa validate data/audio models/twi_lexicon.txt models/twi_acoustic_model.zip")
         sys.exit(1)
 
@@ -423,12 +446,14 @@ def main():
     )
     parser.add_argument("--update",    action="store_true", help="Re-download model and dictionary")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
+    parser.add_argument("--no-g2p",    action="store_true",
+                        help="Disable automatic G2P lexicon expansion for OOV words")
     args = parser.parse_args()
 
     if not ensure_model_and_dict(REPO, force_update=args.update):
         sys.exit(1)
 
-    run_alignment(overwrite=args.overwrite)
+    run_alignment(overwrite=args.overwrite, use_g2p=not args.no_g2p)
 
 if __name__ == "__main__":
     main()
