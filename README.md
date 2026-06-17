@@ -2,7 +2,7 @@
 
 A one‑stop tool to align Twi (Akan) audio with text transcripts using a pre‑trained acoustic model. Simply place your files in the `data/` folders and run `python align.py` – everything else is handled automatically.
 
-> **⚠ Domain notice:** The current pre‑trained model was trained exclusively on **religious speech** (Bible readings and sermons). It works well out of the box for similar material, but will produce lower‑quality alignments on conversational Twi, broadcast speech, storytelling, or other domains. If your data comes from a different domain, **we strongly recommend finetuning the model on a sample of your own data** before running full alignment. See [Finetuning](#-finetuning-the-model) below.
+> **⚠ Audio domain notice:** This is about the *audio*, not the words. Any Twi word can now be aligned thanks to automatic [G2P](#-out-of-vocabulary-oov-words) — vocabulary is no longer a limit. The **acoustic model**, however, was trained only on **religious speech** (Bible readings and sermons), so it places word boundaries most accurately on similar material. On conversational Twi, broadcast speech, or storytelling, timestamps will be less precise. For best results on a different audio style, **finetune the model on a sample of your own recordings** first — see [Finetuning](#-finetuning-the-model).
 
 ---
 
