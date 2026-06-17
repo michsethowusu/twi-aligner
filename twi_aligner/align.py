@@ -16,7 +16,8 @@ import argparse
 import subprocess
 
 from . import g2p
-from .paths import MODEL_DIR, AUDIO_DIR, TEXT_DIR, OUTPUT_DIR, MAX_UTTERANCE_SECONDS
+from .paths import (MODEL_DIR, AUDIO_DIR, TEXT_DIR, OUTPUT_DIR,
+                    MAX_UTTERANCE_SECONDS, DEFAULT_BEAM, DEFAULT_RETRY_BEAM)
 from .download import REPO, ensure_model_and_dict
 from .audio import convert_audio_to_mfa_format, segment_long_files
 
@@ -65,7 +66,7 @@ def expand_lexicon_for_transcripts(dict_txt):
 
 def run_alignment(overwrite: bool = False, use_g2p: bool = True,
                   max_seconds: float = MAX_UTTERANCE_SECONDS,
-                  beam: int = None, retry_beam: int = None) -> None:
+                  beam: int = DEFAULT_BEAM, retry_beam: int = DEFAULT_RETRY_BEAM) -> None:
     MODEL_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -151,13 +152,12 @@ def main():
                         help=f"Max clip length before auto-segmentation, in seconds "
                              f"(default: {MAX_UTTERANCE_SECONDS}). Lower it if long "
                              f"utterances fail to align.")
-    parser.add_argument("--beam", type=int, default=None,
-                        help="MFA alignment beam (default: MFA's own, 10). Raise it "
-                             "(e.g. 100) when utterances fail to align, which is common "
-                             "for audio outside the model's training domain.")
-    parser.add_argument("--retry-beam", type=int, default=None,
-                        help="MFA retry beam for utterances that fail the first pass "
-                             "(default: MFA's own, 40). Try ~4x --beam, e.g. 400.")
+    parser.add_argument("--beam", type=int, default=DEFAULT_BEAM,
+                        help=f"MFA alignment beam (default: {DEFAULT_BEAM}). Lower it "
+                             f"(e.g. 10) for faster runs on clean, in-domain audio.")
+    parser.add_argument("--retry-beam", type=int, default=DEFAULT_RETRY_BEAM,
+                        help=f"MFA retry beam for utterances that fail the first pass "
+                             f"(default: {DEFAULT_RETRY_BEAM}).")
     args = parser.parse_args()
 
     if not ensure_model_and_dict(REPO, force_update=args.update):

@@ -15,4 +15,11 @@ OUTPUT_DIR = Path("output")
 # Audio files longer than this (seconds) are auto-segmented before alignment.
 # Forced alignment is all-or-nothing per utterance and grows fragile on long
 # clips, so the default is deliberately short. Override with --max-seconds.
-MAX_UTTERANCE_SECONDS = 15
+MAX_UTTERANCE_SECONDS = 10
+
+# Default MFA search beams. These are deliberately wider than MFA's own
+# defaults (10 / 40): the wider search reliably aligns audio that differs from
+# the model's training domain, at the cost of some speed. Lower them with
+# --beam / --retry-beam for faster runs on clean, in-domain audio.
+DEFAULT_BEAM       = 100
+DEFAULT_RETRY_BEAM = 400
