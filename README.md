@@ -122,11 +122,11 @@ Build an expanded lexicon yourself (handy for inspection or offline prep):
 
 ```bash
 # from your transcripts
-python g2p_twi.py --text-dir data/text --lexicon models/twi_lexicon.txt \
+python -m twi_aligner.g2p --text-dir data/text --lexicon models/twi_lexicon.txt \
     --merged-out models/twi_lexicon.expanded.txt --unmappable-out output/oov_unmappable.txt
 
 # or from a plain word list
-python g2p_twi.py --words new_words.txt --lexicon models/twi_lexicon.txt
+python -m twi_aligner.g2p --words new_words.txt --lexicon models/twi_lexicon.txt
 ```
 
 To align strictly against the bundled dictionary instead, pass `--no-g2p`.
@@ -137,13 +137,24 @@ To align strictly against the bundled dictionary instead, pass `--no-g2p`.
 ## ⚙️ Command reference
 
 ```bash
-python align.py                # align everything in data/
-python align.py --overwrite    # re-align, replacing existing output files
-python align.py --update       # force re-download of the model and dictionary
-python align.py --no-g2p       # align only against the bundled dictionary (no auto-pronunciation)
+python align.py                    # align everything in data/ (robust defaults)
+python align.py --overwrite        # re-align, replacing existing output files
+python align.py --update           # force re-download of the model and dictionary
+python align.py --no-g2p           # align only against the bundled dictionary (no auto-pronunciation)
+python align.py --max-seconds 8    # auto-segment clips longer than 8s (default: 10)
+python align.py --beam 10 --retry-beam 40   # narrower/faster search for clean in-domain audio
 ```
 
 **Using your own model:** place a `twi_acoustic_model.zip` and `twi_lexicon.txt` in `models/` and the download step is skipped.
+
+### Robust by default
+
+The defaults are tuned to *just align*, even on audio that differs from the model's religious-speech training:
+
+- **Short clips** — long files are auto-segmented to ≤10s (`--max-seconds`) at sentence boundaries, splitting mid-sentence only when a single sentence is itself too long. Alignment is all-or-nothing per clip, so shorter is more robust.
+- **Wide search** — the MFA beam defaults to 100 / 400 (well above MFA's own 10 / 40), which reliably fits out-of-domain audio at the cost of some speed.
+
+These defaults trade a little speed for reliability. On clean, in-domain audio you can speed runs up with a narrower search (`--beam 10 --retry-beam 40`) and/or longer clips (`--max-seconds 20`). If alignment still fails on a whole out-of-domain dataset, [finetuning](#-finetuning-optional) is the more permanent fix.
 
 ---
 
@@ -189,14 +200,14 @@ Useful flags: `--max-samples N` (test on the first N rows), `--overwrite`, `--ke
 **Why this instead of wav2vec 2.0 or Whisper?**
 Those are built for transcription; their word-boundary estimates are imprecise, especially for short words and the consonant clusters common in Twi. A GMM-HMM forced aligner is purpose-built for boundaries and reaches ~50 ms accuracy — what you want for phonetic research, TTS data prep, and corpus annotation.
 
-**Alignment quality is poor on my audio.**
-The bundled model was trained on religious speech, so boundaries are most precise on similar material. If your audio is a different style (conversational, broadcast) you can adapt the model — see [Finetuning](#-finetuning-optional).
+**Alignment quality is poor, or I get `NoAlignmentsError`.**
+The defaults already use short clips and a wide search (see [Robust by default](#robust-by-default)), so most audio aligns out of the box. If a clip still fails, try an even shorter `--max-seconds 6`. The bundled model was trained on religious speech, so it's most precise on similar material; for a consistently different style (conversational, broadcast, health) adapting the model is the more permanent fix — see [Finetuning](#-finetuning-optional).
 
 **The script says "No releases found".**
-Check the repo name; if you forked, update the `REPO` variable at the top of `align.py`.
+Check the repo name; if you forked, update the `REPO` variable at the top of `twi_aligner/download.py`.
 
 **Alignment is slow.**
-Time scales with audio length. Add `--num_jobs 4` to the MFA command in `align.py` to parallelise.
+Time scales with audio length. Add `--num_jobs 4` to the MFA command in `twi_aligner/align.py` to parallelise.
 
 **I get a `_kalpy` missing error.**
 MFA was installed via pip. Reinstall with conda as shown in the Quick Start.
@@ -221,6 +232,25 @@ python align.py
 ```
 
 Options: `--data-dir`, `--output-model`, `--num-jobs N`, `--overwrite`.
+
+---
+
+## 🧩 Repository layout
+
+```
+align.py  align_dataset.py  finetune.py   # thin entry points (run these)
+twi_aligner/                              # the package
+├── align.py        alignment pipeline
+├── dataset.py      batch alignment (HF / CSV)
+├── finetune.py     model adaptation
+├── g2p.py          grapheme-to-phoneme conversion
+├── download.py     model/dictionary download
+├── audio.py        conversion + auto-segmentation
+└── paths.py        shared data/ models/ output/ locations
+data/   models/   output/                 # your inputs and results (gitignored)
+```
+
+Installing is optional — `python align.py` works straight from a clone. If you prefer, `pip install -e .` also exposes `twi-align`, `twi-align-dataset`, `twi-finetune`, and `twi-g2p` commands.
 
 ---
 
