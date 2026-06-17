@@ -13,4 +13,6 @@ TEXT_DIR   = Path("data/text")
 OUTPUT_DIR = Path("output")
 
 # Audio files longer than this (seconds) are auto-segmented before alignment.
-MAX_UTTERANCE_SECONDS = 30
+# Forced alignment is all-or-nothing per utterance and grows fragile on long
+# clips, so the default is deliberately short. Override with --max-seconds.
+MAX_UTTERANCE_SECONDS = 15

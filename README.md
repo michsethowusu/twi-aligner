@@ -137,13 +137,24 @@ To align strictly against the bundled dictionary instead, pass `--no-g2p`.
 ## ⚙️ Command reference
 
 ```bash
-python align.py                # align everything in data/
-python align.py --overwrite    # re-align, replacing existing output files
-python align.py --update       # force re-download of the model and dictionary
-python align.py --no-g2p       # align only against the bundled dictionary (no auto-pronunciation)
+python align.py                    # align everything in data/
+python align.py --overwrite        # re-align, replacing existing output files
+python align.py --update           # force re-download of the model and dictionary
+python align.py --no-g2p           # align only against the bundled dictionary (no auto-pronunciation)
+python align.py --max-seconds 10   # auto-segment clips longer than 10s (default: 15)
+python align.py --beam 100 --retry-beam 400   # widen the search when utterances fail to align
 ```
 
 **Using your own model:** place a `twi_acoustic_model.zip` and `twi_lexicon.txt` in `models/` and the download step is skipped.
+
+### When utterances fail to align
+
+If MFA reports `NoAlignmentsError`, the search couldn't fit the audio to the transcript. Two levers, most effective together:
+
+- **`--max-seconds`** — alignment is all-or-nothing per clip and gets fragile on long utterances, so shorter is safer. Long files are auto-segmented to this length (default 15s) at sentence boundaries, splitting mid-sentence only when a single sentence is itself too long.
+- **`--beam` / `--retry-beam`** — widen MFA's search. The defaults (10 / 40) are tuned for in-domain speech; audio that differs from the model's religious-speech training (e.g. conversational or health content) often needs `--beam 100 --retry-beam 400`.
+
+For example, 25-second health-domain clips that fail with the defaults align cleanly with `python align.py --max-seconds 10 --beam 100 --retry-beam 400`. If a whole dataset is out-of-domain, [finetuning](#-finetuning-optional) is the more permanent fix.
 
 ---
 
@@ -189,8 +200,8 @@ Useful flags: `--max-samples N` (test on the first N rows), `--overwrite`, `--ke
 **Why this instead of wav2vec 2.0 or Whisper?**
 Those are built for transcription; their word-boundary estimates are imprecise, especially for short words and the consonant clusters common in Twi. A GMM-HMM forced aligner is purpose-built for boundaries and reaches ~50 ms accuracy — what you want for phonetic research, TTS data prep, and corpus annotation.
 
-**Alignment quality is poor on my audio.**
-The bundled model was trained on religious speech, so boundaries are most precise on similar material. If your audio is a different style (conversational, broadcast) you can adapt the model — see [Finetuning](#-finetuning-optional).
+**Alignment quality is poor, or I get `NoAlignmentsError`.**
+First try shorter clips and a wider search: `python align.py --max-seconds 10 --beam 100 --retry-beam 400` (see [When utterances fail to align](#when-utterances-fail-to-align)). The bundled model was trained on religious speech, so it's most precise on similar material; for a consistently different style (conversational, broadcast, health) adapting the model is the more permanent fix — see [Finetuning](#-finetuning-optional).
 
 **The script says "No releases found".**
 Check the repo name; if you forked, update the `REPO` variable at the top of `twi_aligner/download.py`.

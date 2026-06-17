@@ -16,7 +16,7 @@ import argparse
 import subprocess
 
 from . import g2p
-from .paths import MODEL_DIR, AUDIO_DIR, TEXT_DIR, OUTPUT_DIR
+from .paths import MODEL_DIR, AUDIO_DIR, TEXT_DIR, OUTPUT_DIR, MAX_UTTERANCE_SECONDS
 from .download import REPO, ensure_model_and_dict
 from .audio import convert_audio_to_mfa_format, segment_long_files
 
@@ -63,7 +63,9 @@ def expand_lexicon_for_transcripts(dict_txt):
 
 # ── Main alignment pipeline ────────────────────────────────────────────────────
 
-def run_alignment(overwrite: bool = False, use_g2p: bool = True) -> None:
+def run_alignment(overwrite: bool = False, use_g2p: bool = True,
+                  max_seconds: float = MAX_UTTERANCE_SECONDS,
+                  beam: int = None, retry_beam: int = None) -> None:
     MODEL_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -76,7 +78,7 @@ def run_alignment(overwrite: bool = False, use_g2p: bool = True) -> None:
 
     # 2. Auto-segment any long files
     if AUDIO_DIR.exists() and TEXT_DIR.exists():
-        segment_long_files(AUDIO_DIR, TEXT_DIR)
+        segment_long_files(AUDIO_DIR, TEXT_DIR, max_seconds)
 
     # 3. Pre-flight checks
     errors = False
@@ -114,6 +116,10 @@ def run_alignment(overwrite: bool = False, use_g2p: bool = True) -> None:
         str(AUDIO_DIR), str(align_dict), str(model_zip), str(OUTPUT_DIR),
         "--clean",
     ]
+    if beam is not None:
+        cmd += ["--beam", str(beam)]
+    if retry_beam is not None:
+        cmd += ["--retry_beam", str(retry_beam)]
     if overwrite:
         cmd.append("--overwrite")
 
@@ -141,12 +147,25 @@ def main():
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
     parser.add_argument("--no-g2p",    action="store_true",
                         help="Disable automatic G2P lexicon expansion for OOV words")
+    parser.add_argument("--max-seconds", type=float, default=MAX_UTTERANCE_SECONDS,
+                        help=f"Max clip length before auto-segmentation, in seconds "
+                             f"(default: {MAX_UTTERANCE_SECONDS}). Lower it if long "
+                             f"utterances fail to align.")
+    parser.add_argument("--beam", type=int, default=None,
+                        help="MFA alignment beam (default: MFA's own, 10). Raise it "
+                             "(e.g. 100) when utterances fail to align, which is common "
+                             "for audio outside the model's training domain.")
+    parser.add_argument("--retry-beam", type=int, default=None,
+                        help="MFA retry beam for utterances that fail the first pass "
+                             "(default: MFA's own, 40). Try ~4x --beam, e.g. 400.")
     args = parser.parse_args()
 
     if not ensure_model_and_dict(REPO, force_update=args.update):
         sys.exit(1)
 
-    run_alignment(overwrite=args.overwrite, use_g2p=not args.no_g2p)
+    run_alignment(overwrite=args.overwrite, use_g2p=not args.no_g2p,
+                  max_seconds=args.max_seconds,
+                  beam=args.beam, retry_beam=args.retry_beam)
 
 
 if __name__ == "__main__":

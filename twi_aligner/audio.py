@@ -86,46 +86,75 @@ def build_proportional_segments(sentences: List[str],
                                  total_duration: float,
                                  max_seconds: float = MAX_UTTERANCE_SECONDS) -> List[Dict]:
     """
-    Split a transcript + audio into MFA-ready clips using word rate.
+    Split a transcript + audio into MFA-ready clips no longer than max_seconds.
 
     Core idea:
-      - Compute words-per-second: total_words / total_duration
-      - Each word therefore takes total_duration / total_words seconds
-      - Accumulate sentences until the running total would exceed max_seconds,
-        then flush to a clip. Sentences are only used as 'do not cut mid-sentence'
-        boundaries — they do not affect the overall word rate or timing.
+      - Estimate each word's duration from its character length: longer words
+        take proportionally longer to say. Characters are a better proxy for
+        speech duration than a raw word count (which treats "a" and
+        "abakɔsɛm" the same).
+      - Walk through the words accumulating them into the current clip,
+        preferring to cut at a sentence boundary, but forcing a cut whenever
+        adding the next word would exceed max_seconds. This means even a single
+        very long sentence (or a transcript with no punctuation at all) is
+        broken into alignable pieces, instead of producing one oversized clip.
 
-    The resulting clip boundaries are timestamps in the actual audio derived
-    purely from the word rate, with no audio analysis required.
+    Clip boundaries are timestamps derived purely from the character rate, with
+    no audio analysis required.
     """
     if not sentences:
         return []
 
-    word_counts = [max(1, len(s.split())) for s in sentences]
-    total_words = sum(word_counts)
-    durations   = [total_duration * (wc / total_words) for wc in word_counts]
+    # Flatten to words, tagging the last word of each sentence as a preferred
+    # cut point. Weight each word by its character length (min 1).
+    words: List[tuple] = []  # (word, is_sentence_end)
+    for sentence in sentences:
+        tokens = sentence.split()
+        for i, tok in enumerate(tokens):
+            words.append((tok, i == len(tokens) - 1))
+    if not words:
+        return []
+
+    weights   = [max(1, len(w)) for w, _ in words]
+    total_w   = sum(weights)
+    durations = [total_duration * (wt / total_w) for wt in weights]
+
+    # Cut at a sentence boundary once a clip is at least this full, so clips
+    # stay reasonably sized rather than ending right after the first sentence.
+    sentence_cut_floor = max_seconds * 0.6
 
     segments: List[Dict] = []
-    current_text:  List[str]  = []
-    current_start: float      = 0.0
-    current_dur:   float      = 0.0
-    elapsed:       float      = 0.0
+    current_text:  List[str] = []
+    current_start: float     = 0.0
+    current_dur:   float     = 0.0
+    elapsed:       float     = 0.0
 
-    for sentence, dur in zip(sentences, durations):
-        if current_text and (current_dur + dur) > max_seconds:
+    def flush(end_time: float) -> None:
+        nonlocal current_text, current_start, current_dur
+        if current_text:
             segments.append({
                 "start": current_start,
-                "end":   elapsed,
+                "end":   end_time,
                 "text":  " ".join(current_text),
             })
-            current_start = elapsed
+            current_start = end_time
             current_text  = []
             current_dur   = 0.0
 
-        current_text.append(sentence)
+    for (word, sentence_end), dur in zip(words, durations):
+        # Forced cut: adding this word would overflow the clip.
+        if current_text and (current_dur + dur) > max_seconds:
+            flush(elapsed)
+
+        current_text.append(word)
         current_dur += dur
         elapsed     += dur
 
+        # Preferred cut: at a sentence boundary once the clip is full enough.
+        if sentence_end and current_dur >= sentence_cut_floor:
+            flush(elapsed)
+
+    # Final clip ends exactly at the true audio end.
     if current_text:
         segments.append({
             "start": current_start,
@@ -136,19 +165,20 @@ def build_proportional_segments(sentences: List[str],
     return segments
 
 
-def segment_long_files(audio_dir: Path, text_dir: Path) -> None:
+def segment_long_files(audio_dir: Path, text_dir: Path,
+                       max_seconds: float = MAX_UTTERANCE_SECONDS) -> None:
     """
-    For every audio/text pair where the audio exceeds MAX_UTTERANCE_SECONDS:
+    For every audio/text pair where the audio exceeds max_seconds:
       1. Split the transcript into sentences.
-      2. Assign each sentence a duration proportional to its word count.
-      3. Merge sentences into MFA-sized chunks (≤ MAX_UTTERANCE_SECONDS each).
+      2. Assign each word a duration proportional to its character length.
+      3. Merge/split into MFA-sized chunks (≤ max_seconds each).
       4. Slice the audio at the computed boundaries using ffmpeg.
       5. Write one .wav + .txt per chunk, then move the originals to data/originals/.
     """
     wav_files  = list(audio_dir.glob("*.wav"))
     long_files = [
         w for w in wav_files
-        if (get_audio_duration(w) or 0) > MAX_UTTERANCE_SECONDS
+        if (get_audio_duration(w) or 0) > max_seconds
     ]
     if not long_files:
         return
@@ -174,9 +204,9 @@ def segment_long_files(audio_dir: Path, text_dir: Path) -> None:
             print(f"  ⚠ Transcript for {wav.name} is empty – skipping.")
             continue
 
-        segments = build_proportional_segments(sentences, duration)
-        print(f"  Merged {len(sentences)} sentence(s) into {len(segments)} clip(s) "
-              f"(≤{MAX_UTTERANCE_SECONDS}s each).")
+        segments = build_proportional_segments(sentences, duration, max_seconds)
+        print(f"  Split {len(sentences)} sentence(s) into {len(segments)} clip(s) "
+              f"(≤{max_seconds}s each).")
 
         base_stem = re.sub(r'_\d{3}$', '', wav.stem)
 
